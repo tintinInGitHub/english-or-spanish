@@ -8,6 +8,7 @@ import {
   IAgoraRTCClient,
   IRemoteAudioTrack,
 } from "agora-rtc-sdk-ng";
+import GIF from 'gif.js';
 
 type TCreateRoomResponse = {
   room: Room;
@@ -129,7 +130,6 @@ async function connectToAgoraRtc(
   return { tracks, client };
 }
 
-
 async function connectToAgoraRtm(
   roomId: string,
   userId: string,
@@ -166,6 +166,7 @@ export default function Home() {
   const [themAudio, setThemAudio] = useState<IRemoteAudioTrack>();
   const channelRef = useRef<RtmChannel>();
   const rtcClientRef = useRef<IAgoraRTCClient>();
+  const [gifUrl, setGifUrl] = useState<string | null>(null);
 
   function handleNextClick() {
     connectToARoom();
@@ -256,8 +257,6 @@ export default function Home() {
     return message.userId === userId ? "You" : "Them";
   }
 
-  const isChatting = room!!;
-
   return (
     <>
       <Head>
@@ -268,7 +267,7 @@ export default function Home() {
       </Head>
 
       <main className={styles.main}>
-        {isChatting ? (
+        {room ? (
           <>
             {room._id}
             <button onClick={handleNextClick}>next</button>
@@ -291,7 +290,7 @@ export default function Home() {
                   )}
                 </div>
               </div>
-
+              <GifDisplay gifUrl={gifUrl} />
               <div className="chat-panel">
                 <ul>
                   {messages.map((message, idx) => (
@@ -320,6 +319,7 @@ export default function Home() {
     </>
   );
 }
+
 function detectMotion(
   videoTrack: IExtendedRemoteVideoTrack | IExtendedCameraVideoTrack,
   isLocal: boolean,
@@ -338,6 +338,7 @@ function detectMotion(
   canvas.width = width;
   canvas.height = height;
   let lastImageData: ImageData | null = null;
+  let motionDetected = false;
 
   function checkForMotion() {
     if (!videoTrack || !videoTrack.getElement) return;
@@ -353,12 +354,14 @@ function detectMotion(
 
     if (lastImageData) {
       const diff = getFrameDifference(imageData.data, lastImageData.data);
-      if (diff > 7718920) { // Motion threshold
+      if (diff > 7718920 && !motionDetected) { // Motion threshold
+        motionDetected = true; // Prevent multiple alerts
         callback();
         if (isLocal) {
-          alert(`You moved`);
+          console.log("Motion detected for local user.");
+          startRecording(videoTrack as IExtendedCameraVideoTrack);
         } else {
-          alert(`User moved`);
+          console.log("Motion detected for remote user.");
         }
       }
     }
@@ -369,7 +372,6 @@ function detectMotion(
   setInterval(checkForMotion, 2000);
 }
 
-
 function getFrameDifference(data1: Uint8ClampedArray, data2: Uint8ClampedArray) {
   let diff = 0;
   for (let i = 0; i < data1.length; i += 4) {
@@ -379,3 +381,95 @@ function getFrameDifference(data1: Uint8ClampedArray, data2: Uint8ClampedArray) 
   }
   return diff;
 }
+
+let mediaRecorder: MediaRecorder;
+let recordedChunks: Blob[] = [];
+
+async function startRecording(videoTrack: IExtendedCameraVideoTrack) {
+  const videoElement = videoTrack.getElement();
+  if (!videoElement) {
+    console.error("No video element found for recording.");
+    return;
+  }
+
+  console.log("Starting recording...");
+
+  const stream = videoElement.captureStream();
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+
+  mediaRecorder.ondataavailable = function(event) {
+    if (event.data.size > 0) {
+      recordedChunks.push(event.data);
+      console.log("Data available:", event.data);
+    }
+  };
+
+  mediaRecorder.onstop = generateGif;
+
+  mediaRecorder.start();
+
+  // Stop recording after 5 seconds
+  setTimeout(() => {
+    console.log("Stopping recording...");
+    mediaRecorder.stop();
+  }, 5000);
+}
+
+async function generateGif() {
+  console.log("Generating GIF...");
+  const videoBlob = new Blob(recordedChunks, { type: 'video/webm' });
+  const videoUrl = URL.createObjectURL(videoBlob);
+  const video = document.createElement('video');
+  video.src = videoUrl;
+  video.muted = true;
+
+  console.log("Video URL created:", videoUrl);
+
+  video.addEventListener('loadeddata', () => {
+    console.log("Video loaded, starting playback...");
+    video.play().then(() => {
+      const gif = new GIF({
+        workers: 2,
+        quality: 10
+      });
+
+      gif.on('finished', function(blob) {
+        const gifUrl = URL.createObjectURL(blob);
+        console.log("Generated GIF URL: ", gifUrl);
+        displayGif(gifUrl);
+      });
+
+      video.addEventListener('timeupdate', function() {
+        if (video.currentTime >= 5) {
+          video.pause();
+          gif.render();
+        } else {
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          gif.addFrame(canvas, { delay: 100 });
+        }
+      });
+    });
+  });
+
+  video.addEventListener('error', (e) => {
+    console.error("Error loading video:", e);
+  });
+}
+
+function displayGif(url: string) {
+  setGifUrl(url);
+  console.log("Displaying GIF URL: ", url);
+}
+
+const GifDisplay = ({ gifUrl }: { gifUrl: string | null }) => {
+  if (!gifUrl) return null;
+  return (
+    <div className="gif-display">
+      <img src={gifUrl} alt="Recorded GIF" />
+    </div>
+  );
+};
