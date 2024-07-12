@@ -8,6 +8,11 @@ import {
   IAgoraRTCClient,
   IRemoteAudioTrack,
 } from "agora-rtc-sdk-ng";
+import sound from '../asset/steve-lacy-staic.mp3'
+import ricardo from "../public/ricardo.png"
+import Image from 'next/image';
+import useSound from "use-sound";
+
 
 type TCreateRoomResponse = {
   room: Room;
@@ -40,19 +45,19 @@ interface IExtendedCameraVideoTrack extends ICameraVideoTrack {
 }
 
 function createRoom(userId: string): Promise<TCreateRoomResponse> {
-  return fetch(`/api/rooms?userId=${userId}`, {
+  return fetch(/api/rooms?userId=${userId}, {
     method: "POST",
   }).then((response) => response.json());
 }
 
 function getRandomRoom(userId: string): Promise<TGetRandomRoomResponse> {
-  return fetch(`/api/rooms?userId=${userId}`).then((response) =>
+  return fetch(/api/rooms?userId=${userId}).then((response) =>
     response.json()
   );
 }
 
 function setRoomToWaiting(roomId: string) {
-  return fetch(`/api/rooms/${roomId}`, { method: "PUT" }).then((response) =>
+  return fetch(/api/rooms/${roomId}, { method: "PUT" }).then((response) =>
     response.json()
   );
 }
@@ -84,50 +89,6 @@ export const VideoPlayer = ({
   return <div ref={ref} style={style}></div>;
 };
 
-async function connectToAgoraRtc(
-  roomId: string,
-  userId: string,
-  onVideoConnect: (videoTrack: IExtendedRemoteVideoTrack) => void,
-  onWebcamStart: (videoTrack: IExtendedCameraVideoTrack) => void,
-  onAudioConnect: (audioTrack: IRemoteAudioTrack) => void,
-  token: string
-) {
-  const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
-
-  const client = AgoraRTC.createClient({
-    mode: "rtc",
-    codec: "vp8",
-  });
-
-  await client.join(
-    process.env.NEXT_PUBLIC_AGORA_APP_ID!,
-    roomId,
-    token,
-    userId
-  );
-
-  client.on("user-published", (themUser, mediaType) => {
-    client.subscribe(themUser, mediaType).then(() => {
-      if (mediaType === "video") {
-        const remoteVideoTrack = themUser.videoTrack as IExtendedRemoteVideoTrack;
-        onVideoConnect(remoteVideoTrack);
-        detectMotion(remoteVideoTrack, false, () => alert(`User ${themUser.uid} moved`));
-      }
-      if (mediaType === "audio") {
-        onAudioConnect(themUser.audioTrack);
-        themUser.audioTrack?.play();
-      }
-    });
-  });
-
-  const tracks = await AgoraRTC.createMicrophoneAndCameraTracks();
-  const cameraTrack = tracks.find(track => track.trackMediaType === 'video') as IExtendedCameraVideoTrack;
-  onWebcamStart(cameraTrack);
-  detectMotion(cameraTrack, true, () => alert(`You moved`));
-  await client.publish(tracks);
-
-  return { tracks, client };
-}
 
 
 async function connectToAgoraRtm(
@@ -157,15 +118,67 @@ async function connectToAgoraRtm(
 }
 
 export default function Home() {
-  const [userId] = useState(parseInt(`${Math.random() * 1e6}`) + "");
+  const [userId] = useState(parseInt(${Math.random() * 1e6}) + "");
   const [room, setRoom] = useState<Room | undefined>();
   const [messages, setMessages] = useState<TMessage[]>([]);
   const [input, setInput] = useState("");
   const [themVideo, setThemVideo] = useState<IRemoteVideoTrack>();
   const [myVideo, setMyVideo] = useState<ICameraVideoTrack>();
   const [themAudio, setThemAudio] = useState<IRemoteAudioTrack>();
+  const [isDetected, setIsDetected] = useState(false)
   const channelRef = useRef<RtmChannel>();
   const rtcClientRef = useRef<IAgoraRTCClient>();
+  const [whoMoved, setWhoMoved] = useState("")
+  const [play] = useSound(sound)
+
+  const isMoved = useRef(false);
+
+  async function connectToAgoraRtc(
+    roomId: string,
+    userId: string,
+    onVideoConnect: (videoTrack: IExtendedRemoteVideoTrack) => void,
+    onWebcamStart: (videoTrack: IExtendedCameraVideoTrack) => void,
+    onAudioConnect: (audioTrack: IRemoteAudioTrack) => void,
+    token: string
+  ) {
+    const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
+  
+    const client = AgoraRTC.createClient({
+      mode: "rtc",
+      codec: "vp8",
+    });
+  
+    await client.join(
+      process.env.NEXT_PUBLIC_AGORA_APP_ID!,
+      roomId,
+      token,
+      userId
+    );
+  
+    client.on("user-published", (themUser, mediaType) => {
+      client.subscribe(themUser, mediaType).then(() => {
+        if (mediaType === "video") {
+          const remoteVideoTrack = themUser.videoTrack as IExtendedRemoteVideoTrack;
+          onVideoConnect(remoteVideoTrack);
+          detectMotion(remoteVideoTrack, false);
+          setWhoMoved("another")
+        }
+        if (mediaType === "audio") {
+          onAudioConnect(themUser.audioTrack);
+          themUser.audioTrack?.play();
+        }
+      });
+    });
+  
+    const tracks = await AgoraRTC.createMicrophoneAndCameraTracks();
+    const cameraTrack = tracks.find(track => track.trackMediaType === 'video') as IExtendedCameraVideoTrack;
+    onWebcamStart(cameraTrack);
+    detectMotion(cameraTrack, true);
+    setWhoMoved("you")
+    await client.publish(tracks);
+  
+    return { tracks, client };
+  }
 
   function handleNextClick() {
     connectToARoom();
@@ -188,6 +201,56 @@ export default function Home() {
       },
     ]);
     setInput("");
+  }
+
+  function detectMotion(
+    videoTrack: IExtendedRemoteVideoTrack | IExtendedCameraVideoTrack,
+    isLocal: boolean,
+    // callback: () => void
+  ) {
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+  
+    if (!context) {
+      console.error('Failed to get canvas context');
+      return;
+    }
+  
+    const width = 649;
+    const height = 480;
+    canvas.width = width;
+    canvas.height = height;
+    let lastImageData: ImageData | null = null;
+  
+    function checkForMotion() {
+      if (!videoTrack || !videoTrack.getElement) return;
+  
+      const element = videoTrack.getElement();
+      if (!element || !(element instanceof HTMLVideoElement)) {
+        console.error('Expected HTMLVideoElement, got:', element);
+        return;
+      }
+  
+      context.drawImage(element, 0, 0, width, height);
+      const imageData = context.getImageData(0, 0, width, height);
+  
+      if (lastImageData) {
+        const diff = getFrameDifference(imageData.data, lastImageData.data);
+        if (!isMoved.current && diff > 7718920) { // Motion threshold
+          isMoved.current = true;
+          setIsDetected(true)
+          // if (isLocal) {
+          //   alert(You moved);
+          // } else {
+          //   alert(User moved);
+          // }
+        }
+      }
+      lastImageData = imageData;
+    }
+  
+    // Check for motion every second
+    setInterval(checkForMotion, 2000);
   }
 
   async function connectToARoom() {
@@ -258,6 +321,11 @@ export default function Home() {
 
   const isChatting = room!!;
 
+  function clearIsDetected(){
+    isMoved.current = false
+    console.log("wascall logger", isMoved)
+  }
+
   return (
     <>
       <Head>
@@ -274,21 +342,24 @@ export default function Home() {
             <button onClick={handleNextClick}>next</button>
             <div className="chat-window">
               <div className="video-panel">
-                <div className="video-stream">
-                  {myVideo && (
-                    <VideoPlayer
-                      style={{ width: "100%", height: "100%" }}
+                  <div className="video-stream">
+                    
+                    {myVideo && (
+                      <VideoPlayer
+                      style={{ width: "100%", height: "100%", position: "absolute" }}
                       videoTrack={myVideo}
-                    />
-                  )}
-                </div>
+                      />
+                      )}
+                    {isMoved.current && whoMoved === "you" && <Image src={ricardo} alt="Ricardo"  style={{position: "absolute", zIndex: 100, width: "50%", height: "auto", right: 0, bottom: 0}}/>}
+                  </div>
                 <div className="video-stream">
                   {themVideo && (
                     <VideoPlayer
-                      style={{ width: "100%", height: "100%" }}
+                      style={{ width: "100%", height: "100%", position: "absolute" }}
                       videoTrack={themVideo}
                     />
-                  )}
+                    )}
+                    {isMoved.current && whoMoved === "another" && <Image src={ricardo} alt="Ricardo"  style={{position: "absolute", zIndex: 100, width: "50%", height: "auto", right: 0, bottom: 0}}/>}
                 </div>
               </div>
 
@@ -300,7 +371,7 @@ export default function Home() {
                     </li>
                   ))}
                 </ul>
-
+                
                 <form onSubmit={handleSubmitMessage}>
                   <input
                     value={input}
@@ -308,6 +379,13 @@ export default function Home() {
                   ></input>
                   <button>submit</button>
                 </form>
+              </div>
+
+
+              <div>              
+              <button onClick={clearIsDetected}>clear</button>
+              <button onClick={()=>console.log(isMoved)}>logger</button>
+              <button onClick={()=>play()}>Boop!</button>
               </div>
             </div>
           </>
@@ -320,54 +398,7 @@ export default function Home() {
     </>
   );
 }
-function detectMotion(
-  videoTrack: IExtendedRemoteVideoTrack | IExtendedCameraVideoTrack,
-  isLocal: boolean,
-  callback: () => void
-) {
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
 
-  if (!context) {
-    console.error('Failed to get canvas context');
-    return;
-  }
-
-  const width = 649;
-  const height = 480;
-  canvas.width = width;
-  canvas.height = height;
-  let lastImageData: ImageData | null = null;
-
-  function checkForMotion() {
-    if (!videoTrack || !videoTrack.getElement) return;
-
-    const element = videoTrack.getElement();
-    if (!element || !(element instanceof HTMLVideoElement)) {
-      console.error('Expected HTMLVideoElement, got:', element);
-      return;
-    }
-
-    context.drawImage(element, 0, 0, width, height);
-    const imageData = context.getImageData(0, 0, width, height);
-
-    if (lastImageData) {
-      const diff = getFrameDifference(imageData.data, lastImageData.data);
-      if (diff > 7718920) { // Motion threshold
-        callback();
-        if (isLocal) {
-          alert(`You moved`);
-        } else {
-          alert(`User moved`);
-        }
-      }
-    }
-    lastImageData = imageData;
-  }
-
-  // Check for motion every second
-  setInterval(checkForMotion, 2000);
-}
 
 
 function getFrameDifference(data1: Uint8ClampedArray, data2: Uint8ClampedArray) {
